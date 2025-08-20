@@ -1,0 +1,36 @@
+{
+  "name": "redis-orm-lite",
+  "version": "1.0.0",
+  "description": "A lightweight Redis ORM with a Mongoose-like API (find, findOne, updateMany, skip, limit, sort, etc.)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "redis",
+    "orm",
+    "mongoose",
+    "typescript",
+    "nosql",
+    "database"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "ioredis": "^5.4.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-username/redis-orm-lite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/redis-orm-lite/issues"
+  },
+  "homepage": "https://github.com/your-username/redis-orm-lite#readme"
+}
