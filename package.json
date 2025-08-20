@@ -1,6 +1,6 @@
 {
   "name": "redis-orm-lite",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A lightweight Redis ORM with a Mongoose-like API (find, findOne, updateMany, skip, limit, sort, etc.)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
