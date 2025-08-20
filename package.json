@@ -1,6 +1,6 @@
 {
   "name": "redis-orm-lite",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A lightweight Redis ORM with a Mongoose-like API (find, findOne, updateMany, skip, limit, sort, etc.)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,7 @@
     "nosql",
     "database"
   ],
-  "author": "Your Name",
+  "author": "Fatjon Mileti",
   "license": "MIT",
   "dependencies": {
     "ioredis": "^5.4.1",
@@ -33,5 +33,10 @@
   "bugs": {
     "url": "https://github.com/FatjonMileti/redis-orm-lite/issues"
   },
-  "homepage": "https://github.com/FatjonMileti/redis-orm-lite#readme"
+  "homepage": "https://github.com/FatjonMileti/redis-orm-lite#readme",
+
+  "publishConfig": {
+  "access": "public"
+}
+
 }
