@@ -1,7 +1,7 @@
 # Redis ORM Lite
 
 A lightweight **Redis ORM** for Node.js with a **Mongoose-like API**.  
-Supports `.find()`, `.findOne()`, `.findById()`, `.updateMany()`, `.deleteMany()`, `.countDocuments()` and query chaining with `.sort()`, `.skip()`, `.limit()`, `.exec()`.
+Supports `.find()`, `.findOne()`, `.findById()`, `.updateOne()`, `.updateMany()`, `.deleteOne()`, `.deleteMany()`, `.countDocuments()`, and query chaining with `.sort()`, `.skip()`, `.limit()`, `.exec()`.
 
 ---
 
@@ -14,34 +14,29 @@ Supports `.find()`, `.findOne()`, `.findById()`, `.updateMany()`, `.deleteMany()
 
 ## ⚡ Installation
 
+### 1. From npm (if published)
 ```bash
 npm install redis-orm-lite
+
 ```
 
 ## 📖 Usage Example
 
 ```ts
-import { Schema, RedisORM } from "redis-orm-lite";
+import { RedisModel, connectRedis } from "redis-orm-lite";
 
 interface User {
-  _id?: string;
+  id?: string;
   name: string;
   email: string;
   age: number;
 }
 
-// Connect to Redis (pass a URL or omit to use default localhost)
-const orm = new RedisORM("redis://localhost:6379");
-
-// Define schema
-const userSchema = new Schema<User>({
-  name: String,
-  email: String,
-  age: Number
-});
+// Connect to Redis
+await connectRedis("redis://localhost:6379");
 
 // Create model
-const UserModel = orm.model<User>("User", userSchema);
+const UserModel = new RedisModel<User>("User");
 
 (async () => {
   // Create documents
@@ -51,9 +46,9 @@ const UserModel = orm.model<User>("User", userSchema);
 
   // Find with query + chaining
   const adults = await UserModel.find({ age: { $gte: 18 } })
-    .sort({ age: -1 })   // Sort by age descending
-    .skip(0)             // Pagination skip
-    .limit(10)           // Limit to 10 results
+    .sort({ age: -1 })
+    .skip(0)
+    .limit(10)
     .exec();
 
   console.log("Adults:", adults);
@@ -63,23 +58,32 @@ const UserModel = orm.model<User>("User", userSchema);
   console.log("First adult:", firstAdult);
 
   // Find by ID
-  if (alice._id) {
-    const userById = await UserModel.findById(alice._id);
+  if (alice.id) {
+    const userById = await UserModel.findById(alice.id);
     console.log("Find by ID:", userById);
   }
 
-  // Count
+  // Count documents
   const count = await UserModel.countDocuments({ age: { $gte: 18 } });
   console.log("Adult count:", count);
 
+  // Update one
+  const updatedOne = await UserModel.updateOne({ id: alice.id }, { age: 26 });
+  console.log("Updated one:", updatedOne);
+
   // Update many
-  const updated = await UserModel.updateMany({ age: { $lt: 25 } }, { age: 25 });
-  console.log("Updated docs:", updated);
+  const updatedMany = await UserModel.updateMany({ age: { $lt: 25 } }, { age: 25 });
+  console.log("Updated many:", updatedMany);
+
+  // Delete one
+  const deletedOne = await UserModel.deleteOne({ id: alice.id });
+  console.log("Deleted one:", deletedOne);
 
   // Delete many
-  const removed = await UserModel.deleteMany({ age: { $gte: 100 } });
-  console.log("Deleted docs:", removed);
+  const deletedMany = await UserModel.deleteMany({ age: { $gte: 100 } });
+  console.log("Deleted many:", deletedMany);
 })();
+
 
 ```
 
@@ -100,7 +104,8 @@ const UserModel = orm.model<User>("User", userSchema);
 
 - **Mongoose-like API over Redis**
   - `.create()`, `.find()`, `.findOne()`, `.findById()`
-  - `.updateMany()`, `.deleteMany()`
+  - `.updateMany()`, `.updateOne()`
+  -  `.deleteMany(), `.deleteOne()`
   - `.countDocuments()`
 - **Query chaining**
   - `.sort({ field: 1 | -1 })`
