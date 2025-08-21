@@ -1,30 +1,22 @@
-import Redis from "ioredis";
+// src/redis-client.ts
+import { createClient } from "redis";
 
-let client: Redis | null = null;
+let client: ReturnType<typeof createClient>;
 
-/**
- * Connects to Redis with the provided URL.
- */
-export function connectRedis(redisUrl: string) {
-  client = new Redis(redisUrl);
+export async function connectRedis(url: string) {
+  client = createClient({ url });
 
-  client.on("connect", () => {
-    console.log("✅ Connected to Redis");
+  client.on("error", (err: Error) => {
+    console.error("Redis Client Error", err);
   });
 
-  client.on("error", (err) => {
-    console.error("❌ Redis connection error:", err);
-  });
-
+  await client.connect();
   return client;
 }
 
-/**
- * Returns the active Redis client.
- */
-export function getRedisClient(): Redis {
+export function getRedisClient() {
   if (!client) {
-    throw new Error("Redis client not initialized. Call connectRedis() first.");
+    throw new Error("Redis client not initialized. Call initRedis first.");
   }
   return client;
 }

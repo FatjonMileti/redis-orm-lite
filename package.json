@@ -32,10 +32,12 @@
   "author": "Fatjon Mileti",
   "license": "MIT",
   "dependencies": {
+    "ioredis": "^5.7.0",
     "redis": "^4.6.7",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@types/ioredis": "^4.28.10",
     "@types/uuid": "^10.0.0",
     "typescript": "^5.6.3"
   },
@@ -47,9 +49,7 @@
     "url": "https://github.com/FatjonMileti/redis-orm-lite/issues"
   },
   "homepage": "https://github.com/FatjonMileti/redis-orm-lite#readme",
-
   "publishConfig": {
-  "access": "public"
-}
-
+    "access": "public"
+  }
 }
