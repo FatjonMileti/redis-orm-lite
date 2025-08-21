@@ -43,7 +43,6 @@ export class RedisModel<T extends { id?: string }> {
 
         if (typeof condition === "object" && condition !== null) {
           const cond = condition as QueryOperator<any>;
-
           if (cond.$gt !== undefined && !(value > cond.$gt)) match = false;
           if (cond.$lt !== undefined && !(value < cond.$lt)) match = false;
           if (cond.$in !== undefined && !cond.$in.includes(value)) match = false;
@@ -78,6 +77,19 @@ export class RedisModel<T extends { id?: string }> {
     return deleted;
   }
 
+  // ✅ New: deleteOne
+  async deleteOne(query: Query<T> = {}): Promise<number> {
+    const docs = await this.find(query);
+    if (docs.length === 0) return 0;
+
+    const doc = docs[0];
+    if (!doc.id) return 0;
+
+    const client = getRedisClient();
+    await client.del(this.getKey(doc.id));
+    return 1;
+  }
+
   async updateMany(query: Query<T>, update: Partial<T>): Promise<number> {
     const docs = await this.find(query);
     const client = getRedisClient();
@@ -91,6 +103,20 @@ export class RedisModel<T extends { id?: string }> {
     }
 
     return updated;
+  }
+
+  // ✅ New: updateOne
+  async updateOne(query: Query<T>, update: Partial<T>): Promise<T | null> {
+    const docs = await this.find(query);
+    if (docs.length === 0) return null;
+
+    const doc = docs[0];
+    if (!doc.id) return null;
+
+    const updatedDoc = { ...doc, ...update };
+    const client = getRedisClient();
+    await client.set(this.getKey(doc.id), JSON.stringify(updatedDoc));
+    return updatedDoc;
   }
 
   async countDocuments(query: Query<T> = {}): Promise<number> {
