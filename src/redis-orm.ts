@@ -1,11 +1,14 @@
-// src/redis-orm.ts
 import { getRedisClient } from "./redis-client";
 import { v4 as uuidv4 } from "uuid";
 
 type QueryOperator<T> = {
   $gt?: T;
   $lt?: T;
+  $gte?: T;
+  $lte?: T;
   $in?: T[];
+  $nin?: T[];
+  $ne?: T;
 };
 
 type Query<T> = Partial<{
@@ -21,11 +24,40 @@ export class RedisModel<T extends { id?: string }> {
 
   async create(doc: T): Promise<T> {
     const client = getRedisClient();
-    const id = doc.id || uuidv4();
+    const id = doc.id ?? uuidv4();
     const newDoc = { ...doc, id };
     await client.set(this.getKey(id), JSON.stringify(newDoc));
     return newDoc;
   }
+
+  // -----------------------
+  // MATCH LOGIC
+  // -----------------------
+  private _matches(doc: T, query: Query<T>): boolean {
+    for (const [field, cond] of Object.entries(query)) {
+      const value = (doc as any)[field];
+
+      if (cond !== null && typeof cond === "object" && !Array.isArray(cond)) {
+        const op = cond as QueryOperator<any>;
+
+        if (op.$gt !== undefined && !(value > op.$gt)) return false;
+        if (op.$gte !== undefined && !(value >= op.$gte)) return false;
+        if (op.$lt !== undefined && !(value < op.$lt)) return false;
+        if (op.$lte !== undefined && !(value <= op.$lte)) return false;
+        if (op.$in !== undefined && !op.$in.includes(value)) return false;
+        if (op.$nin !== undefined && op.$nin.includes(value)) return false;
+        if (op.$ne !== undefined && value === op.$ne) return false;
+      } else {
+        if (value !== cond) return false;
+      }
+    }
+
+    return true;
+  }
+
+  // -----------------------
+  // BASIC FIND FUNCTIONS
+  // -----------------------
 
   async find(query: Query<T> = {}): Promise<T[]> {
     const client = getRedisClient();
@@ -37,24 +69,28 @@ export class RedisModel<T extends { id?: string }> {
       if (!data) continue;
       const doc: T = JSON.parse(data);
 
-      let match = true;
-      for (const [field, condition] of Object.entries(query)) {
-        const value = (doc as any)[field];
-
-        if (typeof condition === "object" && condition !== null) {
-          const cond = condition as QueryOperator<any>;
-          if (cond.$gt !== undefined && !(value > cond.$gt)) match = false;
-          if (cond.$lt !== undefined && !(value < cond.$lt)) match = false;
-          if (cond.$in !== undefined && !cond.$in.includes(value)) match = false;
-        } else {
-          if (value !== condition) match = false;
-        }
+      if (this._matches(doc, query)) {
+        results.push(doc);
       }
+    }
+    return results;
+  }
 
-      if (match) results.push(doc);
+  async findOne(query: Query<T> = {}): Promise<T | null> {
+    const client = getRedisClient();
+    const keys = await client.keys(`${this.modelName}:*`);
+
+    for (const key of keys) {
+      const data = await client.get(key);
+      if (!data) continue;
+      const doc: T = JSON.parse(data);
+
+      if (this._matches(doc, query)) {
+        return doc;
+      }
     }
 
-    return results;
+    return null;
   }
 
   async findById(id: string): Promise<T | null> {
@@ -63,61 +99,89 @@ export class RedisModel<T extends { id?: string }> {
     return data ? JSON.parse(data) : null;
   }
 
+  // -----------------------
+  // UPDATE OPERATIONS
+  // -----------------------
+
+  async updateMany(query: Query<T>, update: Partial<T>): Promise<number> {
+    const docs = await this.find(query);
+    const client = getRedisClient();
+    let count = 0;
+
+    for (const doc of docs) {
+      if (!doc.id) continue;
+      const updated = { ...doc, ...update };
+      await client.set(this.getKey(doc.id), JSON.stringify(updated));
+      count++;
+    }
+    return count;
+  }
+
+  async updateOne(query: Query<T>, update: Partial<T>): Promise<T | null> {
+    const doc = await this.findOne(query);
+    if (!doc || !doc.id) return null;
+
+    const client = getRedisClient();
+    const updated = { ...doc, ...update };
+    await client.set(this.getKey(doc.id), JSON.stringify(updated));
+    return updated;
+  }
+
+  async findOneAndUpdate(
+    query: Query<T>,
+    update: Partial<T>,
+    options: { returnNew?: boolean } = {}
+  ): Promise<T | null> {
+    const doc = await this.findOne(query);
+    if (!doc || !doc.id) return null;
+
+    const client = getRedisClient();
+    const updated = { ...doc, ...update };
+
+    await client.set(this.getKey(doc.id), JSON.stringify(updated));
+
+    return options.returnNew ? updated : doc;
+  }
+
+  // -----------------------
+  // DELETE OPERATIONS
+  // -----------------------
+
   async deleteMany(query: Query<T> = {}): Promise<number> {
     const docs = await this.find(query);
     const client = getRedisClient();
-    let deleted = 0;
+    let count = 0;
 
     for (const doc of docs) {
       if (!doc.id) continue;
       await client.del(this.getKey(doc.id));
-      deleted++;
+      count++;
     }
-
-    return deleted;
+    return count;
   }
 
-  // ✅ New: deleteOne
   async deleteOne(query: Query<T> = {}): Promise<number> {
-    const docs = await this.find(query);
-    if (docs.length === 0) return 0;
-
-    const doc = docs[0];
-    if (!doc.id) return 0;
+    const doc = await this.findOne(query);
+    if (!doc || !doc.id) return 0;
 
     const client = getRedisClient();
     await client.del(this.getKey(doc.id));
     return 1;
   }
 
-  async updateMany(query: Query<T>, update: Partial<T>): Promise<number> {
-    const docs = await this.find(query);
+  async findOneAndDelete(query: Query<T>): Promise<T | null> {
+    const doc = await this.findOne(query);
+    if (!doc || !doc.id) return null;
+
     const client = getRedisClient();
-    let updated = 0;
+    await client.del(this.getKey(doc.id));
 
-    for (const doc of docs) {
-      if (!doc.id) continue;
-      const updatedDoc = { ...doc, ...update };
-      await client.set(this.getKey(doc.id), JSON.stringify(updatedDoc));
-      updated++;
-    }
-
-    return updated;
+    return doc;
   }
 
-  // ✅ New: updateOne
-  async updateOne(query: Query<T>, update: Partial<T>): Promise<T | null> {
-    const docs = await this.find(query);
-    if (docs.length === 0) return null;
-
-    const doc = docs[0];
-    if (!doc.id) return null;
-
-    const updatedDoc = { ...doc, ...update };
-    const client = getRedisClient();
-    await client.set(this.getKey(doc.id), JSON.stringify(updatedDoc));
-    return updatedDoc;
-  }
+  // -----------------------
+  // COUNT
+  // -----------------------
 
   async countDocuments(query: Query<T> = {}): Promise<number> {
     const docs = await this.find(query);
