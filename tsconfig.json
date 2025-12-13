@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2020",                     // modern JS features
-    "module": "ESNext",                     // ESM output
-    "moduleResolution": "Node",             // Node-style resolution
+    "module": "NodeNext",                     // ESM output
+    "moduleResolution": "NodeNext",             // Node-style resolution
     "outDir": "dist",                       // compiled output
     "rootDir": "src",                       // source files
     "strict": true,                         // strict TS rules
