@@ -1,18 +1,18 @@
 {
   "compilerOptions": {
-    "target": "ES2020",                     // modern JS features
-    "module": "NodeNext",                     // ESM output
-    "moduleResolution": "NodeNext",             // Node-style resolution
-    "outDir": "dist",                       // compiled output
-    "rootDir": "src",                       // source files
-    "strict": true,                         // strict TS rules
-    "esModuleInterop": true,                // allow default imports from CJS
-    "skipLibCheck": true,                   // skip type check of deps
-    "resolveJsonModule": true,              // allow importing .json
-    "declaration": true,                    // emit .d.ts for npm consumers
-    "declarationMap": true,                 // source maps for types
-    "sourceMap": true,                      // JS source maps
-    "allowSyntheticDefaultImports": true    // smoother import interop
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "allowSyntheticDefaultImports": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]

@@ -1,2 +1,3 @@
-export * from "./redis-orm.js";
-export * from "./redis-client.js";
+export * from "./redis-orm";
+export { connectRedis } from "./redis-client";
+export { RedisModel, RedisError } from "./redis-orm";
