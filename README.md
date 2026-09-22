@@ -179,8 +179,148 @@ try {
 | `exec()` | `Promise<T[]>` | Execute the query |
 | *(thenable)* | `Promise<T[]>` | Can be used with `await` directly |
 
-### `connectRedis(url: string)`
+### `connectRedis(url: string, options?: ConnectRedisOptions)`
 
 Connects to Redis and returns the client instance. Must be called before any model operations.
+
+`options.retry` optionally sets the global retry policy (see below).
+
+---
+
+## Retry configuration
+
+Transient Redis failures (dropped connections, network blips, timeouts) can
+be retried automatically via [`node-retry-kit`](https://www.npmjs.com/package/node-retry-kit),
+a runtime dependency of this package. The retry engine (backoff, jitter,
+timeout, `AbortSignal`) lives in `node-retry-kit`; `redis-orm-lite` only adds
+the Redis-specific policy: error classification, read/write gating, and ORM
+integration through a single centralized `executeRedisCommand` layer.
+
+**Retry is optional and disabled by default** (`retries: 0`). Upgrading does
+not change existing behavior: every Redis command still executes exactly once
+unless you explicitly configure retries. Enabling retries adds latency on
+failure (waits between attempts), so opt in deliberately.
+
+### Global configuration
+
+```ts
+import { RedisORM } from "redis-orm-lite";
+
+RedisORM.configure({
+  retry: {
+    retries: 3,
+    backoff: "exponential",
+    delay: 100,
+    maxDelay: 2000,
+    jitter: true,
+  },
+});
+```
+
+or equivalently at connect time:
+
+```ts
+await connectRedis("redis://localhost:6379", {
+  retry: { retries: 3, backoff: "exponential", delay: 100, maxDelay: 2000, jitter: true },
+});
+```
+
+All options (`retries`, `backoff`, `delay`, `maxDelay`, `jitter`, `timeout`,
+`signal`, `shouldRetry`, `onRetry`, `onSuccess`, `onFailure`) follow the
+`node-retry-kit` semantics (`retries: 3` = up to 4 total attempts).
+`RedisORM.getConfig()` reads the current config; `RedisORM.resetConfig()`
+restores defaults (retry disabled).
+
+### Per-operation configuration
+
+Any model method accepts an optional trailing `{ retry, signal }` argument
+that is merged over (wins against) the global configuration:
+
+```ts
+await UserModel.findOne({ id: "123" }, { retry: { retries: 5, delay: 100 } });
+
+// Retry disabled for one sensitive call even though globally enabled:
+await UserModel.findById("123", { retry: { retries: 0 } });
+
+// QueryBuilder alternative:
+await UserModel.find({ age: { $gte: 18 } }).withRetry({ retries: 2 }).exec();
+```
+
+`findOneAndUpdate` already takes an options argument, so retry options were
+added to it without breaking its signature:
+
+```ts
+await UserModel.findOneAndUpdate({ id: "123" }, { age: 26 }, { returnNew: true });
+await UserModel.findOneAndUpdate(
+  { id: "123" },
+  { age: 26 },
+  { returnNew: true, retry: { retries: 5 } }
+);
+```
+
+### Which errors are retried
+
+Only **transient** errors are retried (see `isTransientRedisError`):
+
+- network / connection failures (`ECONNRESET`, `ECONNREFUSED`, `EPIPE`,
+  socket closed/hang-up, `ENOTFOUND`, `EAI_AGAIN`, …),
+- timeouts (including `node-retry-kit` per-attempt `TimeoutError`s),
+- momentary server conditions (`LOADING`, `TRYAGAIN`, `BUSY`, `CLUSTERDOWN`).
+
+**Never retried:** authentication / permission errors (`WRONGPASS`, `NOAUTH`,
+`NOPERM`), unknown commands, wrong argument counts, `WRONGTYPE` and other
+data errors, and `AbortError` cancellations. A custom `shouldRetry(error,
+context)` predicate can narrow the policy further, but it cannot widen it to
+permanent errors.
+
+### Write-operation safety and idempotency
+
+Every write this ORM performs is a whole-document overwrite
+(`SET key <full JSON>`) or a key deletion (`DEL`) — both idempotent, so a
+retry after an ambiguous failure cannot corrupt data the way retrying e.g.
+`INCR` could. If the final attempt fails, the **original error is rethrown**
+(via `RedisError.cause`); errors are never wrapped in `RetryError`.
+
+If you need stricter control, gate retries by command class:
+
+```ts
+RedisORM.configure({
+  retry: { retries: 3, delay: 100, reads: true, writes: false },
+});
+```
+
+`reads` covers `SCAN`/`GET`, `writes` covers `SET`/`DEL` (both default to
+`true`).
+
+### Observability
+
+The library never logs on its own. Observe retries through hooks:
+
+```ts
+RedisORM.configure({
+  retry: {
+    retries: 3,
+    onRetry(error, context) {
+      console.warn("Redis operation retry", {
+        attempt: context.attempt,
+        delay: context.delay,
+        error,
+      });
+    },
+    onFailure(error, context) {
+      console.error("Redis operation failed", error);
+    },
+  },
+});
+```
+
+### Cancellation
+
+Pass an `AbortSignal` globally (`retry.signal`), per operation (`{ signal }`),
+or per attempt via `timeout`. Aborting stops further retries and never leaves
+retry timers running. Limitation: node-redis v4 commands do not accept a
+signal, so an already in-flight command still runs to completion — only the
+retry loop/waits are cancelled. Connection management itself stays with the
+Redis client; retries never trigger manual reconnects.
 
 ---

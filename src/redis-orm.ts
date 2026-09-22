@@ -1,5 +1,9 @@
 import { getRedisClient } from "./redis-client";
 import { v4 as uuidv4 } from "uuid";
+import { executeRedisCommand } from "./retry";
+import type { OperationOptions, RedisRetryOptions } from "./retry";
+
+export type { OperationOptions, RedisRetryOptions };
 
 type QueryOperator<T> = {
   $gt?: T;
@@ -24,19 +28,45 @@ export class RedisError extends Error {
   }
 }
 
-async function scanKeys(pattern: string): Promise<string[]> {
+/**
+ * Extra options for `findOneAndUpdate`, which already takes an options
+ * argument. `returnNew` keeps its meaning; `retry` / `signal` are additive
+ * and optional.
+ */
+export interface FindOneAndUpdateOptions {
+  returnNew?: boolean;
+  retry?: RedisRetryOptions;
+  signal?: AbortSignal;
+}
+
+async function scanKeys(
+  pattern: string,
+  options?: OperationOptions
+): Promise<string[]> {
   const client = getRedisClient();
-  const keys: string[] = [];
-  let cursor = 0;
 
   try {
-    do {
-      const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
-      cursor = result.cursor;
-      keys.push(...result.keys);
-    } while (cursor !== 0);
+    // One retry unit = the whole SCAN loop. A mid-loop failure restarts
+    // the scan from cursor 0 (SCAN is a read: always safe to retry).
+    return await executeRedisCommand(
+      "scan",
+      async () => {
+        const keys: string[] = [];
+        let cursor = 0;
 
-    return keys;
+        do {
+          const result = await client.scan(cursor, {
+            MATCH: pattern,
+            COUNT: 100,
+          });
+          cursor = result.cursor;
+          keys.push(...result.keys);
+        } while (cursor !== 0);
+
+        return keys;
+      },
+      options
+    );
   } catch (err) {
     throw new RedisError(`Failed to scan keys with pattern "${pattern}"`, err);
   }
@@ -46,11 +76,15 @@ export class QueryBuilder<T extends { id?: string }> {
   private sortConfig: SortConfig<T> = {};
   private skipCount = 0;
   private limitCount: number | undefined;
+  private operationOptions?: OperationOptions;
 
   constructor(
     private modelName: string,
-    private query: Query<T> = {}
-  ) {}
+    private query: Query<T> = {},
+    options?: OperationOptions
+  ) {
+    this.operationOptions = options;
+  }
 
   sort(sort: SortConfig<T>): this {
     this.sortConfig = sort;
@@ -64,6 +98,21 @@ export class QueryBuilder<T extends { id?: string }> {
 
   limit(n: number): this {
     this.limitCount = n;
+    return this;
+  }
+
+  /**
+   * Override the retry policy for this query only.
+   * Merged over (wins against) the global configuration.
+   */
+  withRetry(retry: RedisRetryOptions): this {
+    this.operationOptions = { ...this.operationOptions, retry };
+    return this;
+  }
+
+  /** Attach an AbortSignal cancelling retry waits for this query. */
+  withSignal(signal: AbortSignal): this {
+    this.operationOptions = { ...this.operationOptions, signal };
     return this;
   }
 
@@ -89,15 +138,21 @@ export class QueryBuilder<T extends { id?: string }> {
     return true;
   }
 
-  async exec(): Promise<T[]> {
-    const keys = await scanKeys(`${this.modelName}:*`);
+  async exec(options?: OperationOptions): Promise<T[]> {
+    const effective: OperationOptions | undefined =
+      options ?? this.operationOptions;
+    const keys = await scanKeys(`${this.modelName}:*`, effective);
     const results: T[] = [];
 
     try {
       const client = getRedisClient();
 
       for (const key of keys) {
-        const data = await client.get(key);
+        const data = await executeRedisCommand(
+          "get",
+          () => client.get(key),
+          effective
+        );
         if (!data) continue;
         const doc: T = JSON.parse(data);
 
@@ -148,28 +203,39 @@ export class RedisModel<T extends { id?: string }> {
     return `${this.modelName}:${id}`;
   }
 
-  async create(doc: T): Promise<T> {
+  async create(doc: T, options?: OperationOptions): Promise<T> {
     try {
       const client = getRedisClient();
       const id = doc.id ?? uuidv4();
       const newDoc = { ...doc, id };
-      await client.set(this.getKey(id), JSON.stringify(newDoc));
+      await executeRedisCommand(
+        "set",
+        () => client.set(this.getKey(id), JSON.stringify(newDoc)),
+        options
+      );
       return newDoc;
     } catch (err) {
       throw new RedisError("Failed to create document", err);
     }
   }
 
-  find(query: Query<T> = {}): QueryBuilder<T> {
-    return new QueryBuilder<T>(this.modelName, query);
+  find(query: Query<T> = {}, options?: OperationOptions): QueryBuilder<T> {
+    return new QueryBuilder<T>(this.modelName, query, options);
   }
 
-  async findOne(query: Query<T> = {}): Promise<T | null> {
+  async findOne(
+    query: Query<T> = {},
+    options?: OperationOptions
+  ): Promise<T | null> {
     try {
-      const keys = await scanKeys(`${this.modelName}:*`);
+      const keys = await scanKeys(`${this.modelName}:*`, options);
 
       for (const key of keys) {
-        const data = await getRedisClient().get(key);
+        const data = await executeRedisCommand(
+          "get",
+          () => getRedisClient().get(key),
+          options
+        );
         if (!data) continue;
         const doc: T = JSON.parse(data);
 
@@ -185,18 +251,29 @@ export class RedisModel<T extends { id?: string }> {
     }
   }
 
-  async findById(id: string): Promise<T | null> {
+  async findById(
+    id: string,
+    options?: OperationOptions
+  ): Promise<T | null> {
     try {
       const client = getRedisClient();
-      const data = await client.get(this.getKey(id));
+      const data = await executeRedisCommand(
+        "get",
+        () => client.get(this.getKey(id)),
+        options
+      );
       return data ? JSON.parse(data) : null;
     } catch (err) {
       throw new RedisError(`Failed to find document by id "${id}"`, err);
     }
   }
 
-  async updateMany(query: Query<T>, update: Partial<T>): Promise<number> {
-    const docs = await this.find(query).exec();
+  async updateMany(
+    query: Query<T>,
+    update: Partial<T>,
+    options?: OperationOptions
+  ): Promise<number> {
+    const docs = await this.find(query, options).exec();
     const client = getRedisClient();
     let count = 0;
 
@@ -204,7 +281,11 @@ export class RedisModel<T extends { id?: string }> {
       for (const doc of docs) {
         if (!doc.id) continue;
         const updated = { ...doc, ...update };
-        await client.set(this.getKey(doc.id), JSON.stringify(updated));
+        await executeRedisCommand(
+          "set",
+          () => client.set(this.getKey(doc.id as string), JSON.stringify(updated)),
+          options
+        );
         count++;
       }
     } catch (err) {
@@ -214,14 +295,22 @@ export class RedisModel<T extends { id?: string }> {
     return count;
   }
 
-  async updateOne(query: Query<T>, update: Partial<T>): Promise<T | null> {
-    const doc = await this.findOne(query);
+  async updateOne(
+    query: Query<T>,
+    update: Partial<T>,
+    options?: OperationOptions
+  ): Promise<T | null> {
+    const doc = await this.findOne(query, options);
     if (!doc || !doc.id) return null;
 
     try {
       const client = getRedisClient();
       const updated = { ...doc, ...update };
-      await client.set(this.getKey(doc.id), JSON.stringify(updated));
+      await executeRedisCommand(
+        "set",
+        () => client.set(this.getKey(doc.id as string), JSON.stringify(updated)),
+        options
+      );
       return updated;
     } catch (err) {
       throw new RedisError("Failed to update document", err);
@@ -231,30 +320,44 @@ export class RedisModel<T extends { id?: string }> {
   async findOneAndUpdate(
     query: Query<T>,
     update: Partial<T>,
-    options: { returnNew?: boolean } = {}
+    options: FindOneAndUpdateOptions = {}
   ): Promise<T | null> {
-    const doc = await this.findOne(query);
+    const { returnNew, retry, signal } = options;
+    const opOptions: OperationOptions | undefined =
+      retry || signal ? { retry, signal } : undefined;
+    const doc = await this.findOne(query, opOptions);
     if (!doc || !doc.id) return null;
 
     try {
       const client = getRedisClient();
       const updated = { ...doc, ...update };
-      await client.set(this.getKey(doc.id), JSON.stringify(updated));
-      return options.returnNew ? updated : doc;
+      await executeRedisCommand(
+        "set",
+        () => client.set(this.getKey(doc.id as string), JSON.stringify(updated)),
+        opOptions
+      );
+      return returnNew ? updated : doc;
     } catch (err) {
       throw new RedisError("Failed to find and update document", err);
     }
   }
 
-  async deleteMany(query: Query<T> = {}): Promise<number> {
-    const docs = await this.find(query).exec();
+  async deleteMany(
+    query: Query<T> = {},
+    options?: OperationOptions
+  ): Promise<number> {
+    const docs = await this.find(query, options).exec();
     const client = getRedisClient();
     let count = 0;
 
     try {
       for (const doc of docs) {
         if (!doc.id) continue;
-        await client.del(this.getKey(doc.id));
+        await executeRedisCommand(
+          "del",
+          () => client.del(this.getKey(doc.id as string)),
+          options
+        );
         count++;
       }
     } catch (err) {
@@ -264,34 +367,51 @@ export class RedisModel<T extends { id?: string }> {
     return count;
   }
 
-  async deleteOne(query: Query<T> = {}): Promise<number> {
-    const doc = await this.findOne(query);
+  async deleteOne(
+    query: Query<T> = {},
+    options?: OperationOptions
+  ): Promise<number> {
+    const doc = await this.findOne(query, options);
     if (!doc || !doc.id) return 0;
 
     try {
       const client = getRedisClient();
-      await client.del(this.getKey(doc.id));
+      await executeRedisCommand(
+        "del",
+        () => client.del(this.getKey(doc.id as string)),
+        options
+      );
       return 1;
     } catch (err) {
       throw new RedisError("Failed to delete document", err);
     }
   }
 
-  async findOneAndDelete(query: Query<T>): Promise<T | null> {
-    const doc = await this.findOne(query);
+  async findOneAndDelete(
+    query: Query<T>,
+    options?: OperationOptions
+  ): Promise<T | null> {
+    const doc = await this.findOne(query, options);
     if (!doc || !doc.id) return null;
 
     try {
       const client = getRedisClient();
-      await client.del(this.getKey(doc.id));
+      await executeRedisCommand(
+        "del",
+        () => client.del(this.getKey(doc.id as string)),
+        options
+      );
       return doc;
     } catch (err) {
       throw new RedisError("Failed to find and delete document", err);
     }
   }
 
-  async countDocuments(query: Query<T> = {}): Promise<number> {
-    const docs = await this.find(query).exec();
+  async countDocuments(
+    query: Query<T> = {},
+    options?: OperationOptions
+  ): Promise<number> {
+    const docs = await this.find(query, options).exec();
     return docs.length;
   }
 
